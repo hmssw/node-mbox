@@ -1,0 +1,135 @@
+
+
+const quotedPrintable = require('quoted-printable');
+const utf8 = require('utf8');
+const { simpleParser } = require('mailparser');
+
+function decodeMimeWord(encodedWord) {
+  const matches = encodedWord.match(/=\?(.+?)\?(.?)\?(.+?)\?=/);
+  if (!matches) {
+    return encodedWord;  // No decoding needed
+  }
+  const charset = matches[1];
+  const encoding = matches[2];
+  const encodedText = matches[3];
+
+  let decodedText = "";
+  if (encoding.toUpperCase() === 'Q') {
+    decodedText = quotedPrintable.decode(encodedText);
+  } else if (encoding.toUpperCase() === 'B') {
+    decodedText = Buffer.from(encodedText, 'base64').toString();
+  } else {
+    throw new Error("Unknown MIME encoding");
+  }
+  
+  // Convert to UTF-8 if not already in UTF-8
+  if (charset.toUpperCase() !== 'UTF-8') {
+    decodedText = utf8.encode(decodedText);
+  }
+  
+  return decodedText;
+}
+
+
+function formatEmailDate(emailDateStr) {
+    // Parsing the email date string.
+    const emailDate = new Date(emailDateStr);
+    
+    // Extracting components.
+    const day = emailDate.getUTCDate().toString().padStart(2, '0');
+    const month = (emailDate.getUTCMonth() + 1).toString().padStart(2, '0');
+    const year = emailDate.getUTCFullYear();
+    const hours = emailDate.getUTCHours().toString().padStart(2, '0');
+    const minutes = emailDate.getUTCMinutes().toString().padStart(2, '0');
+    const seconds = emailDate.getUTCSeconds().toString().padStart(2, '0');
+    const millis = emailDate.getUTCMilliseconds().toString().padStart(3, '0');
+    
+    // Assuming the timezone offset in your desired format is constant (GMT+1:00)
+    const formattedDate = `${month}/${day}/${year}T${hours}:${minutes}:${seconds}.${millis}GMT+1:00`;
+
+    return formattedDate;
+}
+
+// mbox_to_csv.js
+const Mbox = require('./mbox');  // Update path as necessary
+const fs = require('fs');
+const csvWriter = require('csv-write-stream');
+
+const inputFile = 'topics.mbox';  // Update path as necessary
+const outputFile = 'outputMboxDecodedTest.csv';  // Update output file name as necessary
+
+// Create a writable stream to write CSV data
+const writer = csvWriter();
+writer.pipe(fs.createWriteStream(outputFile));
+console.time('Total Processing Time');
+
+const parser = new Mbox(inputFile);
+let messageCount = 0;
+let processingPromises = [];
+parser.on('message', (msgBuffer) => {
+    // Increment the message count
+    messageCount += 1;
+
+    // Add the message processing promise to our list
+    processingPromises.push(processMessage(msgBuffer, messageCount));
+});
+
+
+
+async function processMessage(msgBuffer, msgCount) {
+    try{
+  // Parse email buffer/string as per your requirements
+  const parsed = await simpleParser(msgBuffer);
+  messageCount += 1;
+  // Extracted values or default to 'Unknown'
+  const from = parsed.from?.text || 'Unknown';
+  const subject = parsed.subject || 'Unknown';
+  const date = parsed.date ? formatEmailDate(parsed.date) : 'Unknown';
+  const messageId = parsed.messageId || 'Unknown';
+  const to = parsed.to?.text || 'Unknown';
+  const hasAttach = parsed.attachments?.length ? 'Yes' : 'No';
+  const gmThrid = parsed.headers.get('x-gm-thrid') || 'Unknown';
+  const inReplyTo = parsed.inReplyTo || 'Unknown';
+  const body = parsed.text || 'No body found'; // Using the plain text body
+
+  // Write the parsed data to the CSV file
+  writer.write({
+    From: from,
+    Subject: subject,
+    Date: date,
+    MessageId: messageId,
+    To: to,
+    HasAttach: hasAttach,
+    GMThrid: gmThrid,
+    InReplyTo: inReplyTo,
+    Body: body
+  });
+  if (messageCount % 100 === 0) {
+    console.log(`Processed ${messageCount} messages...`);
+  }
+}
+
+catch (err) {
+    console.error(`An error occurred while parsing a message: ${err.message}`);
+  }
+}
+
+parser.on('end', async () => {
+    // Wait for all the message processing to finish
+    await Promise.all(processingPromises);
+
+    // Now, all messages have been processed.
+    console.log(`Finished processing ${messageCount} messages.`);
+
+    // Close the CSV writer stream now that all message writing is done
+    writer.end();
+    console.log(`Data written to ${outputFile}`);
+
+    // Log total processing time
+    console.timeEnd('Total Processing Time');
+});
+
+parser.on('error', (err) => {
+  console.error(`An error occurred: ${err.message}`);
+});
+
